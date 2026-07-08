@@ -1,4 +1,5 @@
 slurm
+logs/*
 .aim
 runs
 balance_bot.xml

@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --job-name=dqn_minatar
+#SBATCH --partition=tau
+#SBATCH --gres={{gres}}
+#SBATCH --gpus-per-task={{gpus_per_task}}
+#SBATCH --cpus-per-gpu={{cpus_per_gpu}}
+#SBATCH --ntasks={{ntasks}}
+#SBATCH --time={{time}}
+#SBATCH --exclude=margpu007,margpu018,margpu024,margpu025,margpu026,margpu027,margpu029
+#SBATCH --output=slurm/logs/%x_%j.out
+#SBATCH --error=slurm/logs/%x_%j.err
+#SBATCH --array={{array}}
+{{nodes}}
+
+env_ids={{env_ids}}
+seeds={{seeds}}
+env_id=${env_ids[$SLURM_ARRAY_TASK_ID / {{len_seeds}}]}
+seed=${seeds[$SLURM_ARRAY_TASK_ID % {{len_seeds}}]}
+
+echo "Running task $SLURM_ARRAY_TASK_ID with env_id: $env_id and seed: $seed"
+
+srun {{command}} --env-id $env_id --seed $seed #
