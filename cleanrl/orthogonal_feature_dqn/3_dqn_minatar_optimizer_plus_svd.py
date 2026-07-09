@@ -110,14 +110,16 @@ class Args:
     pre_growth_steps: int = 100
     """gradient steps to minimize Bellman error before deciding whether to grow
     """
-    grow_batch_size: int = 512
+    grow_batch_size: int = 1024
     """batch size for the pre-growth (bellman optimization)
     and growing step (SVD)
     """
-    bellman_residual_threshold: float = 0.01
+    bellman_residual_threshold: float = 0
     """if final Bellman loss after pre-growth optimization is below this,
     skip growth
     """
+    numerical_threshold: float = 1e-6
+    """Threshold to consider an eigenvalue as zero in the SVD"""
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -437,18 +439,19 @@ def grow_network_svd(
     env,
     device,
     d_a: int,
+    numerical_threshold: float = 1e-6,
 ) -> tuple[QNetwork, np.ndarray]:
     """
     Grow QNetwork hidden layer from old_h to new_hidden with SVD.
 
-    New encoder rows W_a and new q_head columns θ_a are set to minimize the Bellman
-    residual left by (W*, θ*) under the first-order ReLU approximation.
+    New encoder rows W_a and new q_head columns θ_a are set to minimize the
+    Bellman residual left by (W*, θ*) under the first-order ReLU approximation.
 
-    SVD: Φ_prev = U Σ V^T (output of the layer before the one we want to grow)
-    W_a  = V[:, :d_a]^T   (top-d_a right singular vectors)
-    θ_a,i = r^(i)^T · U^(i)[:, :d_a] · Σ^+[:d_a]
-    where r_k = y_k - Q*(s_k, a_k) is the per-transition Bellman residual,
-    and (·)^(i) selects the rows belonging to transitions where a_k = i.
+    Φ_prev = U Σ V^T (output of the layer before the one we want to grow)
+    W_a  = Σ^(-1/2) V[:, :d_a]^T  (top-d_a right singular vectors)
+    R[k, i] = y_k - Q*(s_k, i)  if a_k = i  (true Bellman residual)
+    R[k, i] = 0 - Q*(s_k, i)    if a_k ≠ i  (target fixed at 0)
+    θ_a = R^T · U[:, :d_a] · Σ^(-1/2)      shape: (n_actions, d_a)
     """
     old_h = old_net.q_head.in_features
 
@@ -457,15 +460,20 @@ def grow_network_svd(
         x_perm = data.observations.float().permute(0, 3, 1, 2)
         phi_prev = old_net.flat(old_net.conv(x_perm)).cpu().numpy()
 
-        # Bellman residuals r_k = y_k - Q*(s_k, a_k)
-        q_vals = old_net(data.observations).gather(1, data.actions).squeeze()
-        r = (td_target - q_vals).cpu().numpy()
+        # R[k, i]: Bellman residual for action i in sample k
+        q_all_np = old_net(data.observations).cpu().numpy()  # (B, n_actions)
+        R = -q_all_np.copy()  # target=0 residuals for all actions
+        td_target_np = td_target.cpu().numpy()
+        actions_np = data.actions.squeeze().cpu().numpy().astype(int)
+        R[np.arange(len(actions_np)), actions_np] = (
+            td_target_np - q_all_np[np.arange(len(actions_np)), actions_np]
+        )
 
-    actions_np = data.actions.squeeze().cpu().numpy()
-    n_actions = old_net.q_head.out_features
-
-    # SVD of Φ_prev augmented with ones: affine directions (weight + bias)
-    phi_aug = np.concatenate([phi_prev, np.ones((phi_prev.shape[0], 1))], axis=1)
+    # SVD of Φ_prev augmented with ones (weight + bias)
+    phi_aug = np.concatenate(
+        [phi_prev, np.ones((phi_prev.shape[0], 1))],
+        axis=1
+    )
     U, S, Vt = np.linalg.svd(phi_aug, full_matrices=False)
     k = len(S)  # number of non null singular values (can be lower than d_a)
     if k < d_a:
@@ -475,13 +483,14 @@ def grow_network_svd(
         )
     d_a_svd = min(d_a, k)  # number of initialized new neurons with SVD
 
-    # W_a: weight part, b_a: bias part of top-d_a_svd right singular vectors
-    W_a = Vt[:d_a_svd, :-1]
-    b_a = Vt[:d_a_svd, -1]
+    # Σ^{-1/2} with convention 0^(-1) = 0
+    sigma_half_plus = np.where(S[:d_a_svd] > numerical_threshold, 1.0 / np.sqrt(S[:d_a_svd]), 0.0)
 
-    # θ_a: one row per action
-    # convention: 1/0 = 0
-    sigma_plus = np.where(S[:d_a_svd] > 1e-10, 1.0 / S[:d_a_svd], 0.0)
+    W_a = sigma_half_plus[:, None] * Vt[:d_a_svd, :-1]
+    b_a = sigma_half_plus * Vt[:d_a_svd, -1]
+
+    # θ_a = R^T · U[:, :d_a_svd] · Σ^{-1/2}  shape: (n_actions, d_a_svd)
+    theta_a = (R.T @ U[:, :d_a_svd]) * sigma_half_plus
 
     # Build new network and wire in the analytically initialized weights
     new_net = QNetwork(env, hidden_size=old_h + d_a_svd).to(device)
@@ -489,29 +498,13 @@ def grow_network_svd(
         new_net.conv[0].weight.copy_(old_net.conv[0].weight)
         new_net.conv[0].bias.copy_(old_net.conv[0].bias)
 
-        # encoder[0].weight
-        #   [:old_h, :]             - old neurons, copied from W*
-        #   [old_h:old_h+d_a_svd, :] - new neurons
         new_net.encoder[0].weight[:old_h, :].copy_(old_net.encoder[0].weight)
-        new_net.encoder[0].weight[old_h:old_h + d_a_svd, :].copy_(
-            torch.as_tensor(W_a, dtype=torch.float32)
-        )
+        new_net.encoder[0].weight[old_h:, :].copy_(torch.as_tensor(W_a, dtype=torch.float32))
         new_net.encoder[0].bias[:old_h].copy_(old_net.encoder[0].bias)
         new_net.encoder[0].bias[old_h:].copy_(torch.as_tensor(b_a, dtype=torch.float32))
 
-        # q_head.weight: (n_actions, new_hidden)
-        #   [:, :old_h]             - old neurons, copied from θ*
-        #   [:, old_h:old_h+d_a_svd] - new neurons
         new_net.q_head.weight[:, :old_h].copy_(old_net.q_head.weight)
-        for i in range(n_actions):
-            mask = actions_np == i
-            if not mask.any():
-                continue
-            r_i = r[mask]
-            U_i = U[mask, :d_a_svd]
-            new_net.q_head.weight[i, old_h:old_h + d_a_svd] = torch.as_tensor(
-                (r_i @ U_i) * sigma_plus, dtype=torch.float32
-            )
+        new_net.q_head.weight[:, old_h:].copy_(torch.as_tensor(theta_a, dtype=torch.float32))
         new_net.q_head.bias.copy_(old_net.q_head.bias)
 
     return new_net, S[:d_a_svd]
@@ -671,6 +664,7 @@ if __name__ == "__main__":
                         env=envs,
                         device=device,
                         d_a=new_nh - feature_split,
+                        numerical_threshold=args.numerical_threshold,
                     )
                     target_network = copy.deepcopy(q_network)
                     optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)

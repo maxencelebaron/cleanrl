@@ -113,6 +113,13 @@ class Args:
     """number of environment steps between greedy policy evaluations"""
     eval_episodes: int = 100
     """number of episodes per greedy evaluation"""
+    grow_batch_size: int = 512
+    """batch size for the growth_step
+    """
+    numerical_threshold: float = 1e-6
+    """Threshold to consider an eigenvalue as zero in the SVD"""
+    statistical_threshold: float = 0
+    """Threshold to decide how many singular values to keep"""
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
