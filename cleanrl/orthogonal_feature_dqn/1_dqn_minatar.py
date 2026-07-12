@@ -87,8 +87,6 @@ class Args:
     """number of episodes for the rolling mean of episodic return"""
     compute_final_feature_rank: bool = False
     """if toggled, compute feature rank over a policy rollout after training"""
-    # final_feature_rank_n_states: int = 10_000
-    # """number of states to collect for the final feature rank computation"""
     plasticity_n_steps: int = 2_000
     """number of gradient steps per probe task in plasticity measurement"""
     plasticity_n_tasks: int = 10
@@ -189,7 +187,7 @@ def gradient_metrics(
     Compute per-layer gradient L1/L2 norms and singular value spectrum of the
     weight gradient matrix for each linear layer.
 
-    Uses a fresh forward+backward on a dedicated replay batch.
+    Uses a fresh forward and backward on a dedicated replay batch.
     Does not call optimizer.step(), so network weights are unchanged.
     """
     network.zero_grad()
@@ -493,19 +491,6 @@ if __name__ == "__main__":
                     writer.add_scalar("features/srank", sr, global_step)
                     writer.add_scalar("features/srank_ratio", sr / feature_dim, global_step)
                     print(f"global_step={global_step}, rank={rank}, rank_ratio={rank / feature_dim:.2f}, srank={sr}, srank_ratio={sr / feature_dim:.2f}")
-
-                    grad_m = gradient_metrics(
-                        q_network,
-                        target_network,
-                        rb,
-                        batch_size=args.plasticity_n_samples,
-                        gamma=args.gamma,
-                    )
-                    for key, val in grad_m.items():
-                        if key.endswith("/grad_svs"):
-                            writer.add_histogram(f"gradients/{key}", val, global_step)
-                        else:
-                            writer.add_scalar(f"gradients/{key}", val, global_step)
 
                     plasticity = measure_plasticity(
                         q_network,

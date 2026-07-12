@@ -741,19 +741,6 @@ if __name__ == "__main__":
                         writer.add_scalar("growing/bellman_residual_correlation", brc, global_step)
                         print(f"global_step={global_step}, rank_old={rank_old}, rank_new={rank_new}, brc={brc:.4f}")
 
-                    grad_m = gradient_metrics(
-                        q_network,
-                        target_network,
-                        rb,
-                        batch_size=args.plasticity_n_samples,
-                        gamma=args.gamma,
-                    )
-                    for key, val in grad_m.items():
-                        if key.endswith("/grad_svs"):
-                            writer.add_histogram(f"gradients/{key}", val, global_step)
-                        else:
-                            writer.add_scalar(f"gradients/{key}", val, global_step)
-
                     plasticity = measure_plasticity(
                         q_network,
                         rb,
