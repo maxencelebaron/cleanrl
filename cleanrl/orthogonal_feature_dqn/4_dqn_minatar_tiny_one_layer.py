@@ -434,7 +434,11 @@ def pre_growth_optimize(
         loss = F.mse_loss(td_target, old_val)
         if step == 0:
             initial_loss = loss.item()
-        writer.add_scalar("losses/bellman_residual_during_growth", loss.item(), growth_step + 1 + step)
+        writer.add_scalar(
+            "losses/bellman_residual_during_growth",
+            loss.item(),
+            growth_step + 1 + step
+        )
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -461,15 +465,15 @@ def grow_network_gromo(
     q_head = q_network.q_head
 
     with torch.no_grad():
-        old_val = q_network(data.observations).gather(1, data.actions).squeeze()
-        r = td_target - old_val
+        old_val_optimal = q_network(data.observations).gather(1, data.actions).squeeze()
+        residu = td_target - old_val_optimal
 
     q_head.init_computation()
     q_network.eval()
 
     q_network.zero_grad()
-    old_val = q_network(data.observations).gather(1, data.actions).squeeze()
-    loss = loss_sum(r, old_val)
+    old_val_optimal = q_network(data.observations).gather(1, data.actions).squeeze()
+    loss = loss_sum(residu, old_val_optimal)
     loss.backward()
     q_head.update_computation()
 
@@ -560,6 +564,7 @@ if __name__ == "__main__":
     feature_split = 0  # hidden size just before last growth; 0 = no growth yet
     monitoring_obs = None    # fixed observation set for fair cross-checkpoint comparison
     monitoring_batch = None  # fixed transition batch (includes next_obs/rewards/actions)
+    growth_step = 0  # x-axis counter for losses/bellman_residual_during_growth
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
@@ -611,10 +616,10 @@ if __name__ == "__main__":
 
                 # Pre-growth: try to saturate the current architecture on Bellman error
                 initial_loss, final_loss, growth_step = pre_growth_optimize(
-                    q_network,
-                    grow_data,
-                    td_target,
-                    optimizer,
+                    network=q_network,
+                    data=grow_data,
+                    td_target=td_target,
+                    optimizer=optimizer,
                     n_steps=args.pre_growth_steps,
                     writer=writer,
                     growth_step=growth_step,
@@ -639,7 +644,7 @@ if __name__ == "__main__":
                     feature_split = q_network.encoder.out_features
                     added_neurons = new_nh - q_network.encoder.out_features
                     grow_network_gromo(
-                        q_network,
+                        q_network=q_network,
                         data=grow_data,
                         td_target=td_target,
                         maximum_added_neurons=added_neurons,

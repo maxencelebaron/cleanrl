@@ -113,8 +113,15 @@ class Args:
     """number of environment steps between greedy policy evaluations"""
     eval_episodes: int = 100
     """number of episodes per greedy evaluation"""
-    grow_batch_size: int = 512
+    grow_batch_size: int = 1024
     """batch size for the growth_step
+    """
+    bellman_residual_threshold: float = 0
+    """if final Bellman loss after pre-growth optimization is below this,
+    skip growth
+    """
+    pre_growth_steps: int = 100
+    """gradient steps to minimize Bellman error before deciding whether to grow
     """
     numerical_threshold: float = 1e-6
     """Threshold to consider an eigenvalue as zero in the SVD"""
@@ -409,50 +416,88 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
+def pre_growth_optimize(
+    network: QNetwork,
+    data,
+    td_target: torch.Tensor,
+    optimizer,
+    n_steps: int,
+    writer,
+    growth_step: int,
+) -> tuple[float, float, int]:
+    """
+    Run n_steps of Bellman backprop on a fixed batch before deciding whether to grow.
+
+    Optimizes L = (1/n)||T^π Q - Φ(W)·θ^T||² jointly over all network weights.
+
+    Returns (initial_loss, final_loss, growth_step + n_steps). The network and optimizer
+    are updated in place, so W* and θ* are retained for the subsequent growth step.
+    """
+    initial_loss = None
+    loss = None
+    for step in range(n_steps):
+        phi = network.encode(data.observations)
+        old_val = network.q_head(phi).gather(1, data.actions).squeeze()
+        loss = F.mse_loss(td_target, old_val)
+        if step == 0:
+            initial_loss = loss.item()
+        writer.add_scalar(
+            "losses/bellman_residual_during_growth",
+            loss.item(),
+            growth_step + 1 + step
+        )
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    return initial_loss, loss.item(), growth_step + n_steps
+
+
 def grow_layer_gromo(
     q_network: QNetwork,
-    target_network: QNetwork,
-    replay_buffer,
-    device,
-    n_samples: int,
-    batch_size: int,
-    gamma: float,
+    data,
+    td_target: torch.Tensor,
     downstream_layer,
     maximum_added_neurons: int,
     scaling_factor: float = 1.0,
+    numerical_threshold: float = 1e-6,
+    statistical_threshold: float = 0,
 ) -> None:
     """
     Grow one layer in-place using gromo's optimal neuron criterion.
 
     Pass the layer DOWNSTREAM of the one to grow as `downstream_layer`:
-      - grow encoder output → downstream_layer=q_network.q_head
-      - grow conv output    → downstream_layer=q_network.encoder
+      - grow encoder output: downstream_layer=q_network.q_head
+      - grow conv output: downstream_layer=q_network.encoder
 
     gromo grows the connection between downstream_layer.previous_module and
-    downstream_layer by accumulating TD-loss statistics from the replay buffer.
-    The optimizer must be rebuilt after calling this function.
+    downstream_layer. The optimizer must be rebuilt after calling this function.
     """
-    loss_sum = nn.MSELoss(reduction="mean")
+    loss_sum = nn.MSELoss(reduction="sum")
+
+    with torch.no_grad():
+        old_val_optimal = q_network(data.observations).gather(1, data.actions).squeeze()
+        residu = td_target - old_val_optimal
 
     downstream_layer.init_computation()
     q_network.eval()
 
-    n_collected = 0
-    while n_collected < n_samples:
-        q_network.zero_grad()
-        data = replay_buffer.sample(batch_size)
-        with torch.no_grad():
-            target_max, _ = target_network(data.next_observations).max(dim=1)
-            td_target = data.rewards.flatten() + gamma * target_max * (1 - data.dones.flatten())
-        old_val = q_network(data.observations).gather(1, data.actions).squeeze()
-        loss = loss_sum(td_target, old_val)
-        loss.backward()
-        downstream_layer.update_computation()
-        n_collected += batch_size
+    q_network.zero_grad()
+    old_val = q_network(data.observations).gather(1, data.actions).squeeze()
+    loss = loss_sum(residu, old_val)
+    loss.backward()
+    downstream_layer.update_computation()
 
     q_network.train()
 
-    downstream_layer.compute_optimal_updates(maximum_added_neurons=maximum_added_neurons)
+    downstream_layer.compute_optimal_updates(
+        numerical_threshold=numerical_threshold,
+        statistical_threshold=statistical_threshold,
+        maximum_added_neurons=maximum_added_neurons,
+        compute_delta=True,
+        use_covariance=True,
+        use_projection=True,
+    )
     downstream_layer.reset_computation()
     downstream_layer.previous_module.store_input = False
 
@@ -531,6 +576,7 @@ if __name__ == "__main__":
     feature_split = 0  # hidden size just before last growth; 0 = no growth yet
     monitoring_obs = None    # fixed observation set for fair cross-checkpoint comparison
     monitoring_batch = None  # fixed transition batch (includes next_obs/rewards/actions)
+    growth_step = 0  # x-axis counter for losses/bellman_residual_during_growth
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
@@ -572,35 +618,72 @@ if __name__ == "__main__":
         if next_growth_idx < len(growth_schedule):
             grow_at, new_nh = growth_schedule[next_growth_idx]
             if global_step >= grow_at:
-                feature_split = q_network.encoder.out_features
-                added_neurons = new_nh - q_network.encoder.out_features
-                grow_layer_gromo(
-                    q_network,
-                    target_network,
-                    rb,
-                    device,
-                    n_samples=args.plasticity_n_samples,
-                    batch_size=args.batch_size,
-                    gamma=args.gamma,
-                    downstream_layer=q_network.q_head,
-                    maximum_added_neurons=added_neurons,
+                # Sample fixed batch and compute frozen targets for the whole growth event
+                grow_data = rb.sample(args.grow_batch_size)
+                with torch.no_grad():
+                    target_max, _ = target_network(grow_data.next_observations).max(dim=1)
+                    td_target = grow_data.rewards.flatten() + args.gamma * target_max * (1 - grow_data.dones.flatten())
+                    q_pred_init = q_network(grow_data.observations).gather(1, grow_data.actions).squeeze()
+                writer.add_scalar("losses/bellman_residual_during_growth", F.mse_loss(td_target, q_pred_init).item(), growth_step)
+
+                # Pre-growth: try to saturate the current architecture on Bellman error
+                initial_loss, final_loss, growth_step = pre_growth_optimize(
+                    network=q_network,
+                    data=grow_data,
+                    td_target=td_target,
+                    optimizer=optimizer,
+                    n_steps=args.pre_growth_steps,
+                    writer=writer,
+                    growth_step=growth_step,
                 )
-                grow_layer_gromo(
-                    q_network,
-                    target_network,
-                    rb,
-                    device,
-                    n_samples=args.plasticity_n_samples,
-                    batch_size=args.batch_size,
-                    gamma=args.gamma,
-                    downstream_layer=q_network.encoder,
-                    maximum_added_neurons=args.n_conv_channels_per_growth,
+                writer.add_scalar(
+                    "growing/bellman_optimal_residual_before_growing",
+                    final_loss,
+                    global_step,
                 )
-                target_network = copy.deepcopy(q_network)
-                optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
-                writer.add_scalar("growing/hidden_size", q_network.encoder.out_features, global_step)
-                writer.add_scalar("growing/conv_channels", q_network.conv.out_channels, global_step)
-                print(f"global_step={global_step}: grew encoder to hidden={q_network.encoder.out_features}, conv to channels={q_network.conv.out_channels}")
+                print(
+                    f"global_step={global_step}: pre-growth opt "
+                    f"loss {initial_loss:.4f} → {final_loss:.4f} "
+                    f"(threshold={args.bellman_residual_threshold})"
+                )
+
+                if final_loss <= args.bellman_residual_threshold:
+                    writer.add_scalar("growing/growth_skipped", 1, global_step)
+                    print(f"global_step={global_step}: skipping growth, residual saturated")
+                else:
+                    # Architecture cannot reduce residual further - grow from W*, θ*
+                    feature_split = q_network.encoder.out_features
+                    added_neurons = new_nh - q_network.encoder.out_features
+                    grow_layer_gromo(
+                        q_network=q_network,
+                        data=grow_data,
+                        td_target=td_target,
+                        downstream_layer=q_network.q_head,
+                        maximum_added_neurons=added_neurons,
+                        numerical_threshold=args.numerical_threshold,
+                        statistical_threshold=args.statistical_threshold,
+                    )
+                    grow_layer_gromo(
+                        q_network=q_network,
+                        data=grow_data,
+                        td_target=td_target,
+                        downstream_layer=q_network.encoder,
+                        maximum_added_neurons=args.n_conv_channels_per_growth,
+                        numerical_threshold=args.numerical_threshold,
+                        statistical_threshold=args.statistical_threshold,
+                    )
+                    target_network = copy.deepcopy(q_network)
+                    optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
+                    writer.add_scalar("growing/hidden_size", q_network.encoder.out_features, global_step)
+                    writer.add_scalar("growing/conv_channels", q_network.conv.out_channels, global_step)
+                    print(f"global_step={global_step}: grew encoder to hidden={q_network.encoder.out_features}, conv to channels={q_network.conv.out_channels}")
+
+                # Log residual on the same batch after the growth event
+                with torch.no_grad():
+                    q_pred_post = q_network(grow_data.observations).gather(1, grow_data.actions).squeeze()
+                writer.add_scalar("losses/bellman_residual_during_growth", F.mse_loss(td_target, q_pred_post).item(), growth_step + 1)
+                growth_step += 2
+
                 next_growth_idx += 1
 
         # EVAL: periodic greedy evaluation
