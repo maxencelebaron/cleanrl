@@ -1,19 +1,19 @@
 #!/bin/bash
-COMMAND="uv run cleanrl/feature_rank/dqn_minatar_grow_randomly.py \
+COMMAND="uv run cleanrl/feature_rank/6_dqn_minatar_tiny_all_layer.py \
     --capture-video \
     --total-timesteps 5_000_000 \
-    --buffer-size 50_000 \
+    --buffer-size 100_000 \
     --start-e 1 \
-    --end-e 0.1 \
-    --exploration-fraction 0.02 \
-    --learning-starts 20_000 \
+    --end-e 0.01 \
+    --exploration-fraction 0.05 \
+    --learning-starts 10_000 \
     --train-frequency 1 \
     --feature-rank-n-states 2000 \
     --return-window-size 100 \
     --compute-final-feature-rank"
 
 uv run python scripts/submit.py \
-    --env-ids "MinAtar/Asterix-v1" \
+    --env-ids "MinAtar/Breakout-v1" \
     --seeds 1 \
     --command "$COMMAND" \
     --gres "gpu:1" \
