@@ -87,8 +87,6 @@ class Args:
     """number of episodes for the rolling mean of episodic return"""
     compute_final_feature_rank: bool = False
     """if toggled, compute feature rank over a policy rollout after training"""
-    # final_feature_rank_n_states: int = 10_000
-    # """number of states to collect for the final feature rank computation"""
     plasticity_n_steps: int = 2_000
     """number of gradient steps per probe task in plasticity measurement"""
     plasticity_n_tasks: int = 10
