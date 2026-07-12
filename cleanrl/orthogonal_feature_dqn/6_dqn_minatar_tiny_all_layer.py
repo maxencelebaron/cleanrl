@@ -103,9 +103,9 @@ class Args:
     """number of random probe tasks for the final plasticity measurement"""
     initial_hidden: int = 8
     """initial encoder hidden size; grows to 128 over n_growth_steps events"""
-    n_conv_channels_per_growth: int = 4
-    """number of conv output channels to add at each growth event"""
-    n_growth_steps: int = 16
+    initial_out_channels: int = 1
+    """initial number of conv output channels"""
+    n_growth_steps: int = 15
     """number of growth events evenly spaced over training"""
     gradient_steps: int = 4
     """number of gradient steps per training call"""
@@ -147,14 +147,14 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
-    def __init__(self, env, hidden_size: int = 128):
+    def __init__(self, env, initial_out_channels: int = 1, hidden_size: int = 128):
         super().__init__()
         obs_shape = env.single_observation_space.shape  # (H, W, C)
         n_channels = obs_shape[-1]
 
         self.conv = Conv2dGrowingModule(
             in_channels=n_channels,
-            out_channels=16,
+            out_channels=initial_out_channels,
             kernel_size=3,
             stride=1,
             post_layer_function=nn.ReLUDerivativeOneAtZero(),
@@ -458,20 +458,20 @@ def grow_layer_gromo(
     data,
     td_target: torch.Tensor,
     downstream_layer,
-    maximum_added_neurons: int,
     scaling_factor: float = 1.0,
+    maximum_added_neurons: int | None = None,
     numerical_threshold: float = 1e-6,
     statistical_threshold: float = 0,
 ) -> None:
     """
-    Grow one layer in-place using gromo's optimal neuron criterion.
+    Grow one layer using gromo's optimal neuron criterion.
 
     Pass the layer DOWNSTREAM of the one to grow as `downstream_layer`:
       - grow encoder output: downstream_layer=q_network.q_head
       - grow conv output: downstream_layer=q_network.encoder
 
     gromo grows the connection between downstream_layer.previous_module and
-    downstream_layer. The optimizer must be rebuilt after calling this function.
+    downstream_layer.
     """
     loss_sum = nn.MSELoss(reduction="sum")
 
@@ -546,9 +546,17 @@ if __name__ == "__main__":
 
     _FINAL_HIDDEN = 128
 
-    q_network = QNetwork(envs, hidden_size=args.initial_hidden).to(device)
+    q_network = QNetwork(
+        envs,
+        initial_out_channels=args.initial_out_channels,
+        hidden_size=args.initial_hidden
+        ).to(device)
     optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
-    target_network = QNetwork(envs, hidden_size=args.initial_hidden).to(device)
+    target_network = QNetwork(
+        envs,
+        initial_out_channels=args.initial_out_channels,
+        hidden_size=args.initial_hidden
+    ).to(device)
     target_network.load_state_dict(q_network.state_dict())
 
     # growth_schedule: list of (global_step_threshold, new_hidden)
@@ -658,8 +666,8 @@ if __name__ == "__main__":
                         q_network=q_network,
                         data=grow_data,
                         td_target=td_target,
-                        downstream_layer=q_network.q_head,
-                        maximum_added_neurons=added_neurons,
+                        downstream_layer=q_network.encoder,
+                        maximum_added_neurons=None,
                         numerical_threshold=args.numerical_threshold,
                         statistical_threshold=args.statistical_threshold,
                     )
@@ -667,8 +675,8 @@ if __name__ == "__main__":
                         q_network=q_network,
                         data=grow_data,
                         td_target=td_target,
-                        downstream_layer=q_network.encoder,
-                        maximum_added_neurons=args.n_conv_channels_per_growth,
+                        downstream_layer=q_network.q_head,
+                        maximum_added_neurons=added_neurons,
                         numerical_threshold=args.numerical_threshold,
                         statistical_threshold=args.statistical_threshold,
                     )

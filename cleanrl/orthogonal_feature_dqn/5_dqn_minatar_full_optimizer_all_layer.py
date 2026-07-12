@@ -27,7 +27,6 @@ from cleanrl_utils.plot_plasticity_scatter import (
     scatter_cross_runs,
     scatter_within_runs
 )
-from cleanrl_utils.activations import ReLUDerivativeOneAtZero
 
 
 @dataclass
@@ -102,10 +101,10 @@ class Args:
     plasticity_final_n_tasks: int = 50
     """number of random probe tasks for the final plasticity measurement"""
     initial_hidden: int = 8
-    """initial encoder hidden size; grows to 128 over n_growth_steps events"""
-    n_conv_channels_per_growth: int = 4
-    """number of conv output channels to add at each growth event"""
-    n_growth_steps: int = 16
+    """initial encoder hidden size"""
+    initial_out_channels: int = 1
+    """initial number of conv output channels"""
+    n_growth_steps: int = 15
     """number of growth events evenly spaced over training"""
     gradient_steps: int = 4
     """number of gradient steps per training call"""
@@ -123,13 +122,10 @@ class Args:
     pre_growth_steps: int = 100
     """gradient steps to minimize Bellman error before deciding whether to grow
     """
-    residual_fitting_steps: int = 200
-    """gradient steps to train only new neurons on the Bellman residual after expansion
+    residual_fitting_steps: int = 100
+    """gradient steps to train only new neurons on the Bellman residual
+    after expansion
     """
-    numerical_threshold: float = 1e-6
-    """Threshold to consider an eigenvalue as zero in the SVD"""
-    statistical_threshold: float = 0
-    """Threshold to decide how many singular values to keep"""
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -150,13 +146,17 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
-    def __init__(self, env, hidden_size: int = 128):
+    def __init__(self, env, initial_out_channels: int = 1, hidden_size: int = 128):
         super().__init__()
         obs_shape = env.single_observation_space.shape  # (H, W, C)
         n_channels = obs_shape[-1]
 
         self.conv = nn.Sequential(
-            nn.Conv2d(n_channels, 16, kernel_size=3, stride=1),
+            nn.Conv2d(
+                n_channels,
+                initial_out_channels,
+                kernel_size=3,
+                stride=1),
             nn.ReLU(),
         )
 
@@ -447,119 +447,98 @@ def grow_full_optimizer(
     q_network: QNetwork,
     data,
     td_target: torch.Tensor,
-    downstream_layer,
-    maximum_added_neurons: int,
     n_steps: int,
+    n_new_conv: int,
+    n_new_hidden: int,
     learning_rate: float,
 ) -> None:
     """
-    Expand one layer in place, then train only the new weights to fit the
-    Bellman residual via backprop (gradient masking on old parameters).
-
-    downstream_layer=q_network.q_head   → grow encoder output + q_head input
-    downstream_layer=q_network.encoder  → grow conv output + encoder input
+    Simultaneously expand conv (+n_new_conv filters) and encoder
+    (+n_new_hidden neurons), then train only the new weights to fit the
+    Bellman residual.
     """
     device = next(q_network.parameters()).device
 
-    # Compute Bellman residual with pre-growth network
     with torch.no_grad():
         old_val = q_network(data.observations).gather(1, data.actions).squeeze()
         residu = td_target - old_val
 
-    if downstream_layer is q_network.q_head:
-        # ---- Grow encoder output + q_head input ----
-        old_enc = q_network.encoder[0]
-        old_hidden = old_enc.out_features
-        new_hidden = old_hidden + maximum_added_neurons
+    # ---- Grow conv ----
+    old_conv = q_network.conv[0]
+    old_conv_ch = old_conv.out_channels
+    new_conv_ch = old_conv_ch + n_new_conv
 
-        new_enc = nn.Linear(old_enc.in_features, new_hidden, device=device)
-        with torch.no_grad():
-            new_enc.weight[:old_hidden] = old_enc.weight
-            new_enc.bias[:old_hidden] = old_enc.bias
-            new_enc.weight[old_hidden:].zero_()
-            new_enc.bias[old_hidden:].zero_()
-        q_network.encoder[0] = new_enc
+    new_conv = nn.Conv2d(
+        old_conv.in_channels,
+        new_conv_ch,
+        kernel_size=old_conv.kernel_size,
+        stride=old_conv.stride,
+        padding=old_conv.padding,
+        device=device,
+    )
+    with torch.no_grad():
+        new_conv.weight[:old_conv_ch] = old_conv.weight
+        new_conv.bias[:old_conv_ch] = old_conv.bias
+        new_conv.weight[old_conv_ch:].zero_()
+        new_conv.bias[old_conv_ch:].zero_()
+    q_network.conv[0] = new_conv
 
-        old_head = q_network.q_head
-        n_actions = old_head.out_features
-        new_head = nn.Linear(new_hidden, n_actions, device=device)
-        with torch.no_grad():
-            new_head.weight[:, :old_hidden] = old_head.weight
-            new_head.weight[:, old_hidden:].zero_()
-            new_head.bias.copy_(old_head.bias)
-        q_network.q_head = new_head
+    with torch.no_grad():
+        dummy = data.observations[0:1].permute(0, 3, 1, 2).float()
+        new_flat = int(np.prod(q_network.conv(dummy).shape[1:]))
 
-        enc_w_mask = torch.zeros_like(q_network.encoder[0].weight)
-        enc_w_mask[old_hidden:] = 1
-        enc_b_mask = torch.zeros_like(q_network.encoder[0].bias)
-        enc_b_mask[old_hidden:] = 1
-        head_w_mask = torch.zeros_like(q_network.q_head.weight)
-        head_w_mask[:, old_hidden:] = 1
+    # ---- Grow encoder ----
+    old_enc = q_network.encoder[0]
+    old_flat = old_enc.in_features
+    old_hidden = old_enc.out_features
+    new_hidden = old_hidden + n_new_hidden
 
-        opt = optim.Adam(q_network.parameters(), lr=learning_rate)
-        for _ in range(n_steps):
-            pred = q_network(data.observations).gather(1, data.actions).squeeze()
-            loss = F.mse_loss(residu, pred)
-            opt.zero_grad()
-            loss.backward()
-            q_network.encoder[0].weight.grad.mul_(enc_w_mask)
-            q_network.encoder[0].bias.grad.mul_(enc_b_mask)
-            q_network.q_head.weight.grad.mul_(head_w_mask)
-            if q_network.q_head.bias.grad is not None:
-                q_network.q_head.bias.grad.zero_()
-            opt.step()
+    new_enc = nn.Linear(new_flat, new_hidden, device=device)
+    with torch.no_grad():
+        new_enc.weight[:old_hidden, :old_flat] = old_enc.weight
+        new_enc.weight[old_hidden:].zero_()
+        new_enc.bias[:old_hidden] = old_enc.bias
+        new_enc.bias[old_hidden:].zero_()
+    q_network.encoder[0] = new_enc
 
-    elif downstream_layer is q_network.encoder:
-        # ---- Grow conv output + encoder input ----
-        old_conv = q_network.conv[0]
-        old_conv_ch = old_conv.out_channels
-        new_conv_ch = old_conv_ch + maximum_added_neurons
+    # ---- Grow ----
+    old_head = q_network.q_head
+    new_head = nn.Linear(new_hidden, old_head.out_features, device=device)
+    with torch.no_grad():
+        new_head.weight[:, :old_hidden] = old_head.weight
+        new_head.bias.copy_(old_head.bias)
+    q_network.q_head = new_head
 
-        new_conv = nn.Conv2d(
-            old_conv.in_channels, new_conv_ch,
-            kernel_size=old_conv.kernel_size, stride=old_conv.stride,
-            padding=old_conv.padding, device=device,
-        )
-        with torch.no_grad():
-            new_conv.weight[:old_conv_ch] = old_conv.weight
-            new_conv.bias[:old_conv_ch] = old_conv.bias
-            new_conv.weight[old_conv_ch:].zero_()
-            new_conv.bias[old_conv_ch:].zero_()
-        q_network.conv[0] = new_conv
+    # ---- Gradient masks ----
+    conv_w_mask = torch.zeros_like(q_network.conv[0].weight)
+    conv_w_mask[old_conv_ch:] = 1
+    conv_b_mask = torch.zeros_like(q_network.conv[0].bias)
+    conv_b_mask[old_conv_ch:] = 1
 
-        # Recompute flat_size after conv expansion
-        with torch.no_grad():
-            dummy = data.observations[0:1].permute(0, 3, 1, 2).float()
-            new_flat = int(np.prod(q_network.conv(dummy).shape[1:]))
+    # encoder: freeze only the old-old block [:old_hidden, :old_flat]
+    enc_w_mask = torch.ones_like(q_network.encoder[0].weight)
+    enc_w_mask[:old_hidden, :old_flat] = 0
+    enc_b_mask = torch.zeros_like(q_network.encoder[0].bias)
+    enc_b_mask[old_hidden:] = 1
 
-        old_enc = q_network.encoder[0]
-        old_flat = old_enc.in_features
-        new_enc = nn.Linear(new_flat, old_enc.out_features, device=device)
-        with torch.no_grad():
-            new_enc.weight[:, :old_flat] = old_enc.weight
-            new_enc.weight[:, old_flat:].zero_()
-            new_enc.bias.copy_(old_enc.bias)
-        q_network.encoder[0] = new_enc
+    head_w_mask = torch.zeros_like(q_network.q_head.weight)
+    head_w_mask[:, old_hidden:] = 1
 
-        conv_w_mask = torch.zeros_like(q_network.conv[0].weight)
-        conv_w_mask[old_conv_ch:] = 1
-        conv_b_mask = torch.zeros_like(q_network.conv[0].bias)
-        conv_b_mask[old_conv_ch:] = 1
-        enc_w_mask = torch.zeros_like(q_network.encoder[0].weight)
-        enc_w_mask[:, old_flat:] = 1
-
-        opt = optim.Adam(q_network.parameters(), lr=learning_rate)
-        for _ in range(n_steps):
-            pred = q_network(data.observations).gather(1, data.actions).squeeze()
-            loss = F.mse_loss(residu, pred)
-            opt.zero_grad()
-            loss.backward()
-            q_network.conv[0].weight.grad.mul_(conv_w_mask)
-            q_network.conv[0].bias.grad.mul_(conv_b_mask)
-            q_network.encoder[0].weight.grad.mul_(enc_w_mask)
-            if q_network.encoder[0].bias.grad is not None:
-                q_network.encoder[0].bias.grad.zero_()
-            opt.step()
+    # ---- Train new weights ----
+    opt = optim.Adam(q_network.parameters(), lr=learning_rate)
+    for _ in range(n_steps):
+        pred = q_network(data.observations).gather(1, data.actions).squeeze()
+        loss = F.mse_loss(residu, pred, reduction="mean")
+        opt.zero_grad()
+        loss.backward()
+        q_network.conv[0].weight.grad.mul_(conv_w_mask)
+        q_network.conv[0].bias.grad.mul_(conv_b_mask)
+        q_network.encoder[0].weight.grad.mul_(enc_w_mask)
+        q_network.encoder[0].bias.grad.mul_(enc_b_mask)
+        q_network.q_head.weight.grad.mul_(head_w_mask)
+        if q_network.q_head.bias.grad is not None:
+            q_network.q_head.bias.grad.zero_()
+        opt.step()
 
 
 if __name__ == "__main__":
@@ -602,9 +581,16 @@ if __name__ == "__main__":
 
     _FINAL_HIDDEN = 128
 
-    q_network = QNetwork(envs, hidden_size=args.initial_hidden).to(device)
+    q_network = QNetwork(
+        envs,
+        initial_out_channels=args.initial_out_channels,
+        hidden_size=args.initial_hidden).to(device)
     optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
-    target_network = QNetwork(envs, hidden_size=args.initial_hidden).to(device)
+    target_network = QNetwork(
+        envs,
+        initial_out_channels=args.initial_out_channels,
+        hidden_size=args.initial_hidden
+    ).to(device)
     target_network.load_state_dict(q_network.state_dict())
 
     # growth_schedule: list of (global_step_threshold, new_hidden)
@@ -707,25 +693,15 @@ if __name__ == "__main__":
                     writer.add_scalar("growing/growth_skipped", 1, global_step)
                     print(f"global_step={global_step}: skipping growth, residual saturated")
                 else:
-                    # Architecture cannot reduce residual further - grow from W*, θ*
-                    feature_split = q_network.encoder[0].out_features
+                    # grow from W*, θ*
                     added_neurons = new_nh - q_network.encoder[0].out_features
                     grow_full_optimizer(
                         q_network=q_network,
                         data=grow_data,
                         td_target=td_target,
-                        downstream_layer=q_network.q_head,
-                        maximum_added_neurons=added_neurons,
                         n_steps=args.residual_fitting_steps,
-                        learning_rate=args.learning_rate,
-                    )
-                    grow_full_optimizer(
-                        q_network=q_network,
-                        data=grow_data,
-                        td_target=td_target,
-                        downstream_layer=q_network.encoder,
-                        maximum_added_neurons=args.n_conv_channels_per_growth,
-                        n_steps=args.residual_fitting_steps,
+                        n_new_conv=1,
+                        n_new_hidden=added_neurons,
                         learning_rate=args.learning_rate,
                     )
                     target_network = copy.deepcopy(q_network)

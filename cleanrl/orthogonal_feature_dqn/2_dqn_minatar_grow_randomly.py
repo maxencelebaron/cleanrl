@@ -97,9 +97,9 @@ class Args:
     """number of replay buffer samples for plasticity measurement"""
     plasticity_final_n_tasks: int = 50
     """number of random probe tasks for the final plasticity measurement"""
-    initial_hidden: int = 32
+    initial_hidden: int = 8
     """initial encoder hidden size; grows to 128 over n_growth_steps events"""
-    n_growth_steps: int = 3
+    n_growth_steps: int = 15
     """number of growth events evenly spaced over training"""
     gradient_steps: int = 4
     """number of gradient steps per training call"""
