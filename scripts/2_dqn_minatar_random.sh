@@ -1,5 +1,5 @@
 #!/bin/bash
-COMMAND="uv run cleanrl/feature_rank/2_dqn_minatar_grow_randomly.py \
+COMMAND="uv run cleanrl/orthogonal_feature_dqn/2_dqn_minatar_grow_randomly.py \
     --track \
     --wandb-project-name "growing_network_for_feature_collapse" \
     --wandb-entity "tekoumaxencelebaron-cole-normale-sup-rieure-paris-saclay" \
