@@ -34,6 +34,9 @@ atari = [
     "opencv-python>=4.6.0.66,<5",
     "shimmy>=1.1.0",
 ]
+minatar = [
+    "minatar"
+]
 envpool = ["envpool>=0.6.4,<0.7", "opencv-python>=4.6.0.66,<5",]
 procgen = ["procgen>=0.10.7,<0.11"]
 mujoco = [
