@@ -161,7 +161,7 @@ class QNetwork(nn.Module):
             name="conv",
         )
 
-        dummy = torch.zeros(1, n_channels, obs_shape[0], obs_shape[1])
+        dummy = torch.zeros(1, n_channels, obs_shape[0], obs_shape[1], device=self.conv.device)
         flat_size = int(np.prod(self.conv(dummy).shape[1:]))
 
         self.flat = nn.Flatten()
