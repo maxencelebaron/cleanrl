@@ -157,7 +157,7 @@ class QNetwork(nn.Module):
             out_channels=initial_out_channels,
             kernel_size=3,
             stride=1,
-            post_layer_function=nn.ReLUDerivativeOneAtZero(),
+            post_layer_function=ReLUDerivativeOneAtZero(),
             name="conv",
         )
 
@@ -169,7 +169,7 @@ class QNetwork(nn.Module):
         self.encoder = LinearGrowingModule(
             in_features=flat_size,
             out_features=hidden_size,
-            post_layer_function=nn.ReLUDerivativeOneAtZero(),
+            post_layer_function=ReLUDerivativeOneAtZero(),
             allow_growing=True,
             previous_module=self.conv,
             name="encoder",

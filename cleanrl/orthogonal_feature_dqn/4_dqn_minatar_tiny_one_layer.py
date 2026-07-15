@@ -153,7 +153,7 @@ class QNetwork(nn.Module):
 
         self.conv = nn.Sequential(
             nn.Conv2d(n_channels, 16, kernel_size=3, stride=1),
-            nn.ReLUDerivativeOneAtZero(),
+            ReLUDerivativeOneAtZero(),
         )
 
         dummy = torch.zeros(1, n_channels, obs_shape[0], obs_shape[1])
@@ -164,7 +164,7 @@ class QNetwork(nn.Module):
         self.encoder = LinearGrowingModule(
             in_features=flat_size,
             out_features=hidden_size,
-            post_layer_function=nn.ReLUDerivativeOneAtZero(),
+            post_layer_function=ReLUDerivativeOneAtZero(),
             name="encoder",
         )
         self.q_head = LinearGrowingModule(

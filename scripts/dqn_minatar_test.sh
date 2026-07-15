@@ -1,6 +1,5 @@
 #!/bin/bash
-COMMAND="uv run cleanrl/orthogonal_feature_dqn/1_dqn_minatar.py \
-    --capture-video \
+COMMAND="uv run cleanrl/orthogonal_feature_dqn/4_dqn_minatar_tiny_one_layer.py \
     --total-timesteps 100_000 \
     --buffer-size 10_000 \
     --start-e 1 \
