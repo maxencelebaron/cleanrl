@@ -462,7 +462,7 @@ def grow_layer_gromo(
     maximum_added_neurons: int | None = None,
     numerical_threshold: float = 1e-6,
     statistical_threshold: float = 0,
-) -> None:
+) -> torch.Tensor | None:
     """
     Grow one layer using gromo's optimal neuron criterion.
 
@@ -472,6 +472,9 @@ def grow_layer_gromo(
 
     gromo grows the connection between downstream_layer.previous_module and
     downstream_layer.
+
+    Returns the singular values computed by gromo (eigenvalues_extension),
+    or None if unavailable.
     """
     loss_sum = nn.MSELoss(reduction="sum")
 
@@ -498,12 +501,15 @@ def grow_layer_gromo(
         use_covariance=True,
         use_projection=True,
     )
+    eigenvalues = downstream_layer.eigenvalues_extension
     downstream_layer.reset_computation()
     downstream_layer.previous_module.store_input = False
 
     downstream_layer.scaling_factor = scaling_factor
     downstream_layer.apply_change()
     downstream_layer.delete_update()
+
+    return eigenvalues
 
 
 if __name__ == "__main__":
@@ -662,7 +668,7 @@ if __name__ == "__main__":
                     # Architecture cannot reduce residual further - grow from W*, θ*
                     feature_split = q_network.encoder.out_features
                     added_neurons = new_nh - q_network.encoder.out_features
-                    grow_layer_gromo(
+                    eigenvalues_encoder = grow_layer_gromo(
                         q_network=q_network,
                         data=grow_data,
                         td_target=td_target,
@@ -671,7 +677,7 @@ if __name__ == "__main__":
                         numerical_threshold=args.numerical_threshold,
                         statistical_threshold=args.statistical_threshold,
                     )
-                    grow_layer_gromo(
+                    eigenvalues_q_head = grow_layer_gromo(
                         q_network=q_network,
                         data=grow_data,
                         td_target=td_target,
@@ -680,6 +686,10 @@ if __name__ == "__main__":
                         numerical_threshold=args.numerical_threshold,
                         statistical_threshold=args.statistical_threshold,
                     )
+                    if eigenvalues_encoder is not None:
+                        writer.add_histogram("growing/singular_values_tiny_encoder", eigenvalues_encoder.cpu().numpy(), global_step)
+                    if eigenvalues_q_head is not None:
+                        writer.add_histogram("growing/singular_values_tiny_q_head", eigenvalues_q_head.cpu().numpy(), global_step)
                     target_network = copy.deepcopy(q_network)
                     optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
                     writer.add_scalar("growing/hidden_size", q_network.encoder.out_features, global_step)

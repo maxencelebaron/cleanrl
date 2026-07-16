@@ -454,12 +454,15 @@ def grow_network_gromo(
     maximum_added_neurons: int | None = None,
     statistical_threshold: float = 0,
     numerical_threshold: float = 1e-6,
-) -> None:
+) -> torch.Tensor | None:
     """
     Grow the encoder in-place using gromo's optimal neuron criterion.
 
     Statistics are accumulated from replay buffer samples using the TD loss.
     The optimizer must be rebuilt after calling this function.
+
+    Returns the singular values computed by tiny (eigenvalues_extension),
+    or None if unavailable.
     """
     loss_sum = nn.MSELoss(reduction="sum")
     q_head = q_network.q_head
@@ -486,12 +489,15 @@ def grow_network_gromo(
         use_covariance=True,
         use_projection=True,
     )
+    eigenvalues = q_head.eigenvalues_extension
     q_head.reset_computation()
     q_network.encoder.store_input = False
 
     q_head.scaling_factor = scaling_factor
     q_head.apply_change()
     q_head.delete_update()
+
+    return eigenvalues
 
 
 if __name__ == "__main__":
@@ -643,7 +649,7 @@ if __name__ == "__main__":
                     # Architecture cannot reduce residual further - grow from W*, θ*
                     feature_split = q_network.encoder.out_features
                     added_neurons = new_nh - q_network.encoder.out_features
-                    grow_network_gromo(
+                    eigenvalues = grow_network_gromo(
                         q_network=q_network,
                         data=grow_data,
                         td_target=td_target,
@@ -651,6 +657,9 @@ if __name__ == "__main__":
                         statistical_threshold=args.statistical_threshold,
                         numerical_threshold=args.numerical_threshold
                     )
+                    if eigenvalues is not None:
+                        eigs = eigenvalues.cpu().numpy()
+                        writer.add_histogram("growing/singular_values_tiny", eigs, global_step)
                     target_network = copy.deepcopy(q_network)
                     optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
                     writer.add_scalar("growing/hidden_size", q_network.encoder.out_features, global_step)
