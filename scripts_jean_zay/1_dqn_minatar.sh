@@ -15,10 +15,9 @@ COMMAND="uv run cleanrl/orthogonal_feature_dqn/1_dqn_minatar.py \
     --return-window-size 100 \
     --compute-final-feature-rank"
 
-uv run python scripts/submit.py \
+uv run python scripts_jean_zay/submit.py \
     --env-ids "MinAtar/Breakout-v1" \
     --seeds 1 2 3 4 5 \
     --command "$COMMAND" \
-    --gres "gpu:1" \
-    --time "7-00:00:00" \
+    --time "4-00:00:00" \
     "$@"
