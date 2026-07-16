@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=dqn_minatar
-#SBATCH --partition={{partition}}
+#SBATCH --partition={{-C a100}}
 #SBATCH --gpus-per-task={{gpus_per_task}}
 #SBATCH --cpus-per-gpu={{cpus_per_gpu}}
 #SBATCH --ntasks={{ntasks}}
@@ -11,6 +11,8 @@
 #SBATCH -A inl@a100
 {{nodes}}
 
+module load arch/a100
+
 env_ids={{env_ids}}
 seeds={{seeds}}
 env_id=${env_ids[$SLURM_ARRAY_TASK_ID / {{len_seeds}}]}
@@ -20,4 +22,4 @@ echo "Running task $SLURM_ARRAY_TASK_ID with env_id: $env_id and seed: $seed"
 
 export WANDB_API_KEY={{wandb_key}}
 
-srun {{command}} --env-id $env_id --seed $seed #
+srun {{command}} --env-id $env_id --seed $seed
