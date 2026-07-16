@@ -26,13 +26,18 @@ if __name__ == "__main__":
     parser.add_argument("--env-ids", nargs="+", required=True)
     parser.add_argument("--seeds", nargs="+", type=int, required=True)
     parser.add_argument("--command", required=True)
-    parser.add_argument("--gres", default="gpu:1")
     parser.add_argument("--gpus-per-task", default="1")
     parser.add_argument("--cpus-per-gpu", default="4")
     parser.add_argument("--cpus-per-task", default="4")
     parser.add_argument("--ntasks", default="1")
     parser.add_argument("--time", default="24:00:00")
     parser.add_argument("--nodes", default="")
+    parser.add_argument(
+        "--gpu-type",
+        default="a100",
+        choices=["v100", "a100"],
+        help="GPU type: v100 or a100"
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         '--wandb-key',
@@ -45,11 +50,19 @@ if __name__ == "__main__":
     if not args.wandb_key:
         args.wandb_key = (Path(__file__).parent.parent / ".env").read_text().strip().split("=", 1)[1]
 
+    gpu_constraints = {
+    "v100": "-C v100-32g",
+    "a100": "-C a100",
+    }
+    gpu_modules = {
+        "v100": "# V100 - no special module needed",
+        "a100": "module load arch/a100",
+    }
+
     n_envs = len(args.env_ids)
     n_seeds = len(args.seeds)
 
     values = {
-        "gres": args.gres,
         "gpus_per_task": args.gpus_per_task,
         "cpus_per_gpu": args.cpus_per_gpu,
         "cpus_per_task": args.cpus_per_task,
@@ -62,6 +75,8 @@ if __name__ == "__main__":
         "len_seeds": str(n_seeds),
         "command": args.command,
         "wandb_key": args.wandb_key,
+        "gpu_constraint": gpu_constraints[args.gpu_type],
+        "gpu_module": gpu_modules[args.gpu_type],
     }
 
     script = fill_template(args.template, values)

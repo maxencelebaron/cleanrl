@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=dqn_minatar
-#SBATCH --partition={{-C a100}}
+#SBATCH {{gpu_constraint}}
 #SBATCH --gpus-per-task={{gpus_per_task}}
 #SBATCH --cpus-per-gpu={{cpus_per_gpu}}
 #SBATCH --ntasks={{ntasks}}
@@ -11,7 +11,7 @@
 #SBATCH -A inl@a100
 {{nodes}}
 
-module load arch/a100
+{{gpu_module}}
 
 env_ids={{env_ids}}
 seeds={{seeds}}

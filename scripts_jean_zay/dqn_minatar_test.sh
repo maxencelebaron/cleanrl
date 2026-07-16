@@ -19,4 +19,5 @@ uv run python scripts_jean_zay/submit.py \
     --seeds 1 2 3 4 5 \
     --command "$COMMAND" \
     --time "4-00:00:00" \
+    --gpu-type a100 \
     "$@"
