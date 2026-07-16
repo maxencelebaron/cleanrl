@@ -127,12 +127,12 @@ class QNetwork(nn.Module):
         n_channels = obs_shape[-1]
 
         self.conv = nn.Sequential(
-            nn.Conv2d(n_channels, 16, kernel_size=3, stride=1),
+            nn.Conv2d(n_channels, 20, kernel_size=3, stride=1),
             nn.ReLU(),
         )
 
         dummy = torch.zeros(1, n_channels, obs_shape[0], obs_shape[1])
-        flat_size = int(np.prod(self.conv(dummy).shape[1:]))  # 8*8*16 = 1024
+        flat_size = int(np.prod(self.conv(dummy).shape[1:]))  # 8*8*20 = 1280
 
         self.encoder = nn.Sequential(
             nn.Flatten(),

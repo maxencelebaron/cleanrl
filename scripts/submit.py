@@ -34,7 +34,16 @@ if __name__ == "__main__":
     parser.add_argument("--time", default="24:00:00")
     parser.add_argument("--nodes", default="")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        '--wandb-key',
+        type=str,
+        default="",
+        help='the wandb key. If not provided, the script will try to read from `.env`'
+    )
     args = parser.parse_args()
+
+    if not args.wandb_key:
+        args.wandb_key = (Path(__file__).parent.parent / ".env").read_text().strip().split("=", 1)[1]
 
     n_envs = len(args.env_ids)
     n_seeds = len(args.seeds)
@@ -52,6 +61,7 @@ if __name__ == "__main__":
         "seeds": "(" + " ".join(str(s) for s in args.seeds) + ")",
         "len_seeds": str(n_seeds),
         "command": args.command,
+        "wandb_key": args.wandb_key,
     }
 
     script = fill_template(args.template, values)

@@ -19,4 +19,6 @@ seed=${seeds[$SLURM_ARRAY_TASK_ID % {{len_seeds}}]}
 
 echo "Running task $SLURM_ARRAY_TASK_ID with env_id: $env_id and seed: $seed"
 
+export WANDB_API_KEY={{wandb_key}}
+
 srun {{command}} --env-id $env_id --seed $seed #

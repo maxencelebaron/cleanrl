@@ -141,7 +141,7 @@ class QNetwork(nn.Module):
         n_channels = obs_shape[-1]
 
         self.conv = nn.Sequential(
-            nn.Conv2d(n_channels, 16, kernel_size=3, stride=1),
+            nn.Conv2d(n_channels, 20, kernel_size=3, stride=1),
             nn.ReLU(),
         )
 
@@ -416,7 +416,7 @@ def pre_growth_optimize(
         loss = F.mse_loss(td_target, old_val)
         if step == 0:
             initial_loss = loss.item()
-        writer.add_scalar("losses/bellman_residual_during_growth", loss.item(), growth_step + 1 + step)
+        writer.add_scalar("losses/bellman_residual_during_the_update_step", loss.item(), growth_step + 1 + step)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -526,7 +526,7 @@ if __name__ == "__main__":
     feature_split = 0  # hidden size just before last growth; 0 = no growth yet
     monitoring_obs = None    # fixed observation set for fair cross-checkpoint comparison
     monitoring_batch = None  # fixed transition batch (includes next_obs/rewards/actions)
-    growth_step = 0  # x-axis counter for losses/bellman_residual_during_growth
+    growth_step = 0  # x-axis counter for losses/bellman_residual_during_the_update_step
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
@@ -574,7 +574,7 @@ if __name__ == "__main__":
                     target_max, _ = target_network(grow_data.next_observations).max(dim=1)
                     td_target = grow_data.rewards.flatten() + args.gamma * target_max * (1 - grow_data.dones.flatten())
                     q_pred_init = q_network(grow_data.observations).gather(1, grow_data.actions).squeeze()
-                writer.add_scalar("losses/bellman_residual_during_growth", F.mse_loss(td_target, q_pred_init).item(), growth_step)
+                writer.add_scalar("losses/bellman_residual_during_the_update_step", F.mse_loss(td_target, q_pred_init).item(), growth_step)
 
                 # Pre-growth: try to saturate the current architecture on Bellman error
                 initial_loss, final_loss, growth_step = pre_growth_optimize(
@@ -614,7 +614,7 @@ if __name__ == "__main__":
                 # Log residual on the same batch
                 with torch.no_grad():
                     q_pred_post = q_network(grow_data.observations).gather(1, grow_data.actions).squeeze()
-                writer.add_scalar("losses/bellman_residual_during_growth", F.mse_loss(td_target, q_pred_post).item(), growth_step + 1)
+                writer.add_scalar("losses/bellman_residual_during_the_update_step", F.mse_loss(td_target, q_pred_post).item(), growth_step + 1)
                 growth_step += 2
 
                 next_growth_idx += 1
