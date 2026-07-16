@@ -18,6 +18,6 @@ uv run python scripts_jean_zay/submit.py \
     --env-ids "MinAtar/Breakout-v1" \
     --seeds 1 2 3 4 5 \
     --command "$COMMAND" \
-    --time "4-00:00:00" \
+    --time "20:00:00" \
     --gpu-type a100 \
     "$@"
