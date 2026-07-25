@@ -27,7 +27,10 @@ from cleanrl_utils.plot_plasticity_scatter import (
     scatter_cross_runs,
     scatter_within_runs
 )
-from cleanrl_utils.activations import ReLUDerivativeOneAtZero
+from cleanrl_utils.activations import (
+    ReLUDerivativeOneAtZero,
+    line_search
+)
 
 
 @dataclass

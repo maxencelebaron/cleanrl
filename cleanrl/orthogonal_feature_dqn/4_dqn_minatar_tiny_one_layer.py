@@ -26,7 +26,10 @@ from cleanrl_utils.plot_plasticity_scatter import (
     scatter_cross_runs,
     scatter_within_runs
 )
-from cleanrl_utils.activations import ReLUDerivativeOneAtZero
+from cleanrl_utils.activations import (
+    ReLUDerivativeOneAtZero,
+    line_search
+)
 
 
 @dataclass
@@ -450,7 +453,6 @@ def grow_network_gromo(
     q_network: QNetwork,
     data,
     td_target: torch.Tensor,
-    scaling_factor: float = 1.0,
     maximum_added_neurons: int | None = None,
     statistical_threshold: float = 0,
     numerical_threshold: float = 1e-6,
@@ -483,19 +485,57 @@ def grow_network_gromo(
     # Apply tiny to align delta_s with the residual gradient
     q_head.compute_optimal_updates(
         numerical_threshold=numerical_threshold,
-        statistical_threshold=statistical_threshold,
+        statistical_threshold=0,
         maximum_added_neurons=maximum_added_neurons,
         compute_delta=True,
         use_covariance=True,
         use_projection=True,
     )
-    eigenvalues = q_head.eigenvalues_extension
     q_head.reset_computation()
     q_network.encoder.store_input = False
 
-    q_head.scaling_factor = scaling_factor
-    q_head.apply_change()
-    q_head.delete_update()
+    _device = next(q_network.parameters()).device
+
+    q_head.set_scaling_factor(1.0)
+    if q_head.eigenvalues_extension is not None:
+        q_head.sub_select_optimal_added_parameters(
+            threshold=statistical_threshold,
+            zeros_if_not_enough=False,
+            zeros_fan_in=True,
+            zeros_fan_out=False,
+        )
+        q_head.normalize_optimal_updates(normalization_type="weird_normalization")
+    eigenvalues = q_head.eigenvalues_extension
+
+    dataset = torch.utils.data.TensorDataset(data.observations, td_target)
+    grow_dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=len(td_target), shuffle=False
+    )
+
+    with torch.no_grad():
+        initial_q = q_network(data.observations).gather(1, data.actions).squeeze()
+    initial_loss = F.mse_loss(initial_q, td_target).item()
+
+    _actions = data.actions
+
+    def _loss_fn(q_vals, targets):
+        return F.mse_loss(q_vals.gather(1, _actions).squeeze(), targets)
+
+    line_search(
+        model=q_network,
+        layer=q_head,
+        dataloader=grow_dataloader,
+        loss_function=_loss_fn,
+        initial_loss=initial_loss,
+        first_order_improvement=q_head.first_order_improvement,
+        device=_device,
+    )
+
+    if q_head.scaling_factor.item() > 1e-5:
+        q_head.apply_change()
+        q_head.delete_update()
+    else:
+        q_head.delete_update()
 
     return eigenvalues
 
