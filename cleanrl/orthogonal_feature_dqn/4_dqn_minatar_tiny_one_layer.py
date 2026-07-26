@@ -27,7 +27,7 @@ from cleanrl_utils.plot_plasticity_scatter import (
     scatter_within_runs
 )
 from cleanrl_utils.activations import (
-    ReLUDerivativeOneAtZero,
+    ReLUDerivativeOneAtZeroFunctorch,
     line_search
 )
 
@@ -156,7 +156,7 @@ class QNetwork(nn.Module):
 
         self.conv = nn.Sequential(
             nn.Conv2d(n_channels, 20, kernel_size=3, stride=1),
-            ReLUDerivativeOneAtZero(),
+            ReLUDerivativeOneAtZeroFunctorch(),
         )
 
         dummy = torch.zeros(1, n_channels, obs_shape[0], obs_shape[1])
@@ -167,7 +167,7 @@ class QNetwork(nn.Module):
         self.encoder = LinearGrowingModule(
             in_features=flat_size,
             out_features=hidden_size,
-            post_layer_function=ReLUDerivativeOneAtZero(),
+            post_layer_function=ReLUDerivativeOneAtZeroFunctorch(),
             name="encoder",
         )
         self.q_head = LinearGrowingModule(

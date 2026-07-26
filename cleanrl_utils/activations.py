@@ -48,6 +48,40 @@ class ReLUDerivativeOneAtZero(nn.Module):
         return _ReLUDerivativeOneAtZero.apply(x)
 
 
+class _ReLUDerivativeOneAtZeroFunctorch(torch.autograd.Function):
+    """Same as _ReLUDerivativeOneAtZero but using the new-style API
+    (setup_context) required for compatibility with functorch transforms
+    (torch.func.grad, vmap, ...) used by gromo's first_order_improvement.
+    """
+
+    @staticmethod
+    def forward(x: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(x, min=0.0)
+
+    @staticmethod
+    def setup_context(ctx: Any, inputs: tuple, output: torch.Tensor) -> None:
+        (x,) = inputs
+        ctx.save_for_backward(x)
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> torch.Tensor:
+        (x,) = ctx.saved_tensors
+        mask = (x >= 0).to(dtype=grad_output.dtype)
+        return grad_output * mask
+
+
+class ReLUDerivativeOneAtZeroFunctorch(nn.Module):
+    """
+    Functorch-compatible variant of ReLUDerivativeOneAtZero.
+    Use this as post_layer_function in gromo LinearGrowingModule so that
+    first_order_improvement can be computed via torch.func.grad.
+    Identical forward/backward to ReLUDerivativeOneAtZero.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return _ReLUDerivativeOneAtZeroFunctorch.apply(x)
+
+
 @torch.no_grad()
 def evaluate_layer(
     model: nn.Module,
